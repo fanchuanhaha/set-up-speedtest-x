@@ -2,9 +2,10 @@
 
 # ============================================
 # Speedtest-X 一键安装/卸载/管理脚本 (Nginx + PHP-FPM)
-# 用法: ./speedtest.sh              # 安装并启动
-#       ./speedtest.sh uninstall     # 完全卸载
-#       ./speedtest.sh menu          # 弹出管理菜单
+# 用法: ./speedtest.sh                       # 安装并启动（交互输入端口+项目名）
+#       ./speedtest.sh install 33332 myspeed # 安装（指定端口和项目名）
+#       ./speedtest.sh uninstall             # 完全卸载
+#       ./speedtest.sh menu                  # 弹出管理菜单
 #       安装后可使用 st 命令管理
 # ============================================
 
@@ -17,7 +18,8 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ---------- 配置 ----------
-PROJECT_DIR="/www/wwwroot/speedtest"
+PROJECT_NAME="${PROJECT_NAME:-speedtest}"
+PROJECT_DIR="/www/wwwroot/$PROJECT_NAME"
 LOG_FILE="/var/log/speedtest_access.log"
 ST_COMMAND_PATH="/usr/local/bin/st"
 
@@ -126,11 +128,12 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # 硬编码配置（安装时写入）
-PROJECT_DIR="/www/wwwroot/speedtest"
 STEOF
     
-    # 动态写入配置
+    # 动态写入配置（支持自定义项目名）
     cat >> "$ST_COMMAND_PATH" << EOF
+PROJECT_NAME="${PROJECT_NAME}"
+PROJECT_DIR="${PROJECT_DIR}"
 PORT="${ACTUAL_PORT:-unknown}"
 PHP_FPM_SERVICE="${ACTUAL_PHP_FPM_SERVICE:-php-fpm}"
 EOF
@@ -340,8 +343,8 @@ show_status() {
     
     # 访问测试
     if [ -n "$PORT" ] && [ "$PORT" != "unknown" ]; then
-        echo -e "${BOLD}访问测试:${NC}"
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 3 http://127.0.0.1:$PORT 2>/dev/null)
+        echo -e "${BOLD}访问测试 (/${PROJECT_NAME}/):${NC}"
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 3 "http://127.0.0.1:$PORT/${PROJECT_NAME}/" 2>/dev/null)
         if [ "$HTTP_CODE" = "200" ]; then
             echo -e "  ${GREEN}● 正常${NC} (HTTP $HTTP_CODE)"
         elif [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then
@@ -454,9 +457,10 @@ show_config() {
     IP=$(curl -s -m 3 4.ipw.cn 2>/dev/null || curl -s -m 3 ipinfo.io/ip 2>/dev/null || echo "未知")
     
     echo -e "${BOLD}访问地址:${NC}"
-    echo -e "  🌐 http://${IP}:${PORT}"
-    echo -e "  🏠 http://localhost:${PORT}"
+    echo -e "  🌐 http://${IP}:${PORT}/${PROJECT_NAME}/"
+    echo -e "  🏠 http://localhost:${PORT}/${PROJECT_NAME}/"
     echo ""
+    echo -e "${BOLD}项目名称:${NC} ${PROJECT_NAME}"
     echo -e "${BOLD}项目目录:${NC} ${PROJECT_DIR}"
     echo -e "${BOLD}监听端口:${NC} ${PORT}"
     echo ""
@@ -499,7 +503,7 @@ uninstall_speedtest() {
     echo -e "${RED}${BOLD}╚════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}这将删除:${NC}"
-    echo -e "  - Speedtest-X 项目文件"
+    echo -e "  - Speedtest-X 项目文件 (${PROJECT_DIR})"
     echo -e "  - Nginx 配置文件"
     echo -e "  - st 管理命令"
     echo ""
@@ -602,7 +606,16 @@ STEOF
 
 # ========== 卸载函数 ==========
 uninstall() {
+    # 从 st 命令反读实际 PROJECT_DIR（支持自定义名字）
+    if [ -f "$ST_COMMAND_PATH" ]; then
+        _PD=$(grep -oP '^PROJECT_DIR="\K[^"]+' "$ST_COMMAND_PATH" | head -1)
+        [ -n "$_PD" ] && PROJECT_DIR="$_PD"
+        _PN=$(grep -oP '^PROJECT_NAME="\K[^"]+' "$ST_COMMAND_PATH" | head -1)
+        [ -n "$_PN" ] && PROJECT_NAME="$_PN"
+    fi
+
     echo -e "${YELLOW}正在卸载 Speedtest-X...${NC}"
+    echo -e "${YELLOW}项目目录: $PROJECT_DIR${NC}"
 
     # 停止服务
     echo -e "${YELLOW}停止相关服务...${NC}"
@@ -752,422 +765,3 @@ show_menu_installer() {
                 systemctl restart nginx
             else
                 service php-fpm restart 2>/dev/null
-                service nginx restart
-            fi
-            echo -e "${GREEN}服务已重启！${NC}"
-            sleep 1
-            show_menu_installer
-            ;;
-        3)
-            # 查看状态
-            echo -e "\n${BOLD}服务状态:${NC}"
-            if pgrep -x "nginx" > /dev/null; then
-                echo -e "${GREEN}✓ Nginx 运行中${NC}"
-            else
-                echo -e "${RED}✗ Nginx 未运行${NC}"
-            fi
-            if pgrep -f "php-fpm" > /dev/null; then
-                echo -e "${GREEN}✓ PHP-FPM 运行中${NC}"
-            else
-                echo -e "${RED}✗ PHP-FPM 未运行${NC}"
-            fi
-            echo ""
-            read -p "按回车键返回菜单..." 
-            show_menu_installer
-            ;;
-        4)
-            uninstall
-            ;;
-        0)
-            echo -e "${GREEN}再见！${NC}"
-            exit 0
-            ;;
-        *)
-            echo -e "${RED}无效选择！${NC}"
-            sleep 1
-            show_menu_installer
-            ;;
-    esac
-}
-
-# ========== 主程序 ==========
-detect_os
-echo -e "${GREEN}操作系统: $OS${NC}"
-
-# ========== 处理命令参数 ==========
-case "${1:-install}" in
-    uninstall)
-        uninstall
-        ;;
-    menu)
-        show_menu_installer
-        exit 0
-        ;;
-    install|"")
-        # 继续执行安装流程
-        ;;
-    *)
-        echo -e "${RED}未知命令: $1${NC}"
-        echo -e "用法: $0 [install|uninstall|menu]"
-        exit 1
-        ;;
-esac
-
-# ========== 端口输入 ==========
-echo -e "${BLUE}================================${NC}"
-echo -e "${BLUE}   请输入要使用的端口号${NC}"
-echo -e "${BLUE}================================${NC}"
-
-if [ -n "$2" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
-    PORT=$2
-    echo -e "${GREEN}使用命令行参数端口: $PORT${NC}"
-else
-    while true; do
-        read -p "请输入端口号 (默认: 33332): " INPUT_PORT
-        PORT=${INPUT_PORT:-33332}
-        
-        if validate_port "$PORT"; then
-            break
-        fi
-    done
-fi
-
-echo -e "${GREEN}将使用端口: $PORT${NC}"
-
-# ========== 端口检测 ==========
-echo -e "${YELLOW}检测端口 $PORT 占用情况...${NC}"
-if check_port $PORT; then
-    echo -e "${RED}端口 $PORT 已被占用！${NC}"
-    echo -e "${YELLOW}占用详情:${NC}"
-    if command -v ss &>/dev/null; then
-        ss -tlnp | grep ":$PORT "
-    elif command -v netstat &>/dev/null; then
-        netstat -tlnp | grep ":$PORT "
-    elif command -v lsof &>/dev/null; then
-        lsof -i :$PORT
-    fi
-    
-    echo -e "\n${YELLOW}请选择操作:${NC}"
-    echo "  1) 终止占用进程并继续安装"
-    echo "  2) 更换端口重新安装"
-    echo "  3) 退出安装"
-    read -p "请选择 (1/2/3): " PORT_CHOICE
-    
-    case $PORT_CHOICE in
-        1)
-            if command -v ss &>/dev/null; then
-                PID=$(ss -tlnp | grep ":$PORT " | grep -oP 'pid=\K[0-9]+' | head -1)
-            elif command -v netstat &>/dev/null; then
-                PID=$(netstat -tlnp | grep ":$PORT " | awk '{print $7}' | cut -d'/' -f1)
-            elif command -v lsof &>/dev/null; then
-                PID=$(lsof -ti :$PORT)
-            fi
-            
-            if [ -n "$PID" ]; then
-                echo -e "${YELLOW}终止进程 PID: $PID${NC}"
-                kill -9 $PID 2>/dev/null
-                sleep 1
-                if check_port $PORT; then
-                    echo -e "${RED}端口 $PORT 仍然被占用，请手动处理${NC}"
-                    exit 1
-                else
-                    echo -e "${GREEN}端口 $PORT 已释放${NC}"
-                fi
-            else
-                echo -e "${RED}无法获取进程PID，请手动处理${NC}"
-                exit 1
-            fi
-            ;;
-        2)
-            exec "$0"
-            ;;
-        3)
-            echo -e "${RED}安装终止${NC}"
-            exit 1
-            ;;
-        *)
-            echo -e "${RED}无效选择，安装终止${NC}"
-            exit 1
-            ;;
-    esac
-else
-    echo -e "${GREEN}端口 $PORT 可用${NC}"
-fi
-
-# ========== 安装 Nginx 和 PHP-FPM ==========
-echo -e "${GREEN}安装 Nginx 和 PHP-FPM...${NC}"
-
-case $OS in
-    alpine)
-        apk add --no-cache nginx php php-fpm php-mbstring php-xml php-curl php-zip php-gd php-json php-openssl php-ctype unzip curl wget bash
-        PHP_SOCKET="unix:/run/php/php-fpm.sock"
-        PHP_FPM_SERVICE="php-fpm82"
-        
-        if ! rc-service $PHP_FPM_SERVICE status 2>/dev/null | grep -q "started"; then
-            PHP_FPM_SERVICE="php-fpm83"
-        fi
-        if ! rc-service $PHP_FPM_SERVICE status 2>/dev/null | grep -q "started"; then
-            PHP_FPM_SERVICE="php-fpm"
-        fi
-        
-        mkdir -p /run/php
-        mkdir -p /var/log/nginx
-        chown nginx:nginx /run/php 2>/dev/null || true
-        
-        if ! id nginx &>/dev/null; then
-            adduser -D -g 'nginx' nginx 2>/dev/null || true
-        fi
-        ;;
-    ubuntu|debian)
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y || true
-        apt-get install -y --no-install-recommends \
-            nginx php-fpm php-cli php-mbstring php-xml php-curl php-zip php-gd php-ctype \
-            unzip curl wget
-        PHP_FPM_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null)
-        if [ -z "$PHP_FPM_VERSION" ]; then
-            PHP_FPM_VERSION=$(ls /etc/php/*/fpm/php-fpm.conf 2>/dev/null | head -1 | sed 's|/etc/php/\(.*\)/fpm/php-fpm.conf|\1|')
-        fi
-        if [ -f "/var/run/php/php${PHP_FPM_VERSION}-fpm.sock" ]; then
-            PHP_SOCKET="unix:/var/run/php/php${PHP_FPM_VERSION}-fpm.sock"
-        else
-            PHP_SOCKET="127.0.0.1:9000"
-        fi
-        PHP_FPM_SERVICE="php${PHP_FPM_VERSION}-fpm"
-        ;;
-    centos|rhel|fedora|rocky|almalinux)
-        if command -v dnf &>/dev/null; then
-            dnf install -y epel-release
-            dnf install -y nginx php-fpm php-cli php-mbstring php-xml php-curl php-zip php-gd unzip curl wget
-        else
-            yum install -y epel-release
-            yum install -y nginx php-fpm php-cli php-mbstring php-xml php-curl php-zip php-gd unzip curl wget
-        fi
-        PHP_SOCKET="unix:/var/run/php-fpm/www.sock"
-        PHP_FPM_SERVICE="php-fpm"
-        ;;
-esac
-
-# 验证安装
-if ! command -v nginx &>/dev/null; then
-    echo -e "${RED}Nginx 安装失败${NC}"
-    exit 1
-fi
-
-if ! command -v php &>/dev/null; then
-    echo -e "${RED}PHP 安装失败${NC}"
-    exit 1
-fi
-
-# 验证 PHP ctype 扩展
-if ! php -m | grep -q "ctype"; then
-    echo -e "${YELLOW}警告: PHP ctype 扩展未加载，尝试安装...${NC}"
-    case $OS in
-        alpine)
-            apk add --no-cache php-ctype
-            ;;
-        ubuntu|debian)
-            apt-get install -y php-ctype || apt-get install -y php${PHP_FPM_VERSION}-ctype
-            ;;
-    esac
-fi
-
-echo -e "${GREEN}Nginx 版本: $(nginx -v 2>&1)${NC}"
-echo -e "${GREEN}PHP 版本: $(php -v | head -1)${NC}"
-
-# ========== 下载项目 ==========
-echo -e "${GREEN}下载 Speedtest-X...${NC}"
-mkdir -p "$PROJECT_DIR"
-TEMP_DIR=$(mktemp -d)
-cd "$TEMP_DIR" || exit 1
-
-if command -v git &>/dev/null; then
-    git clone https://github.com/MortyFx/speedtest-x.git .
-else
-    wget -O speedtest-x.zip https://github.com/MortyFx/speedtest-x/archive/refs/heads/master.zip
-    unzip -q speedtest-x.zip
-    if [ -d speedtest-x-master ]; then
-        mv speedtest-x-master/* . 2>/dev/null || true
-        mv speedtest-x-master/.[!.]* . 2>/dev/null 2>&1 || true
-        rm -rf speedtest-x-master speedtest-x.zip
-    fi
-fi
-
-cp -a . "$PROJECT_DIR"/
-cd /
-rm -rf "$TEMP_DIR"
-
-# 确保 results.json 可写
-[ ! -f "$PROJECT_DIR/results.json" ] && echo '[]' > "$PROJECT_DIR/results.json"
-chmod 666 "$PROJECT_DIR/results.json"
-
-# 设置权限
-chmod -R 755 "$PROJECT_DIR"
-chown -R nginx:nginx "$PROJECT_DIR" 2>/dev/null || true
-
-# ========== 配置 PHP-FPM ==========
-if [ "$OS" = "alpine" ]; then
-    PHP_FPM_CONF=$(find /etc/php* -name "www.conf" 2>/dev/null | head -1)
-    if [ -n "$PHP_FPM_CONF" ]; then
-        sed -i 's|^listen = 127.0.0.1:9000|listen = /run/php/php-fpm.sock|' "$PHP_FPM_CONF"
-        sed -i 's|^listen = 9000|listen = /run/php/php-fpm.sock|' "$PHP_FPM_CONF"
-        sed -i 's|^;listen.owner = nobody|listen.owner = nginx|' "$PHP_FPM_CONF"
-        sed -i 's|^;listen.group = nobody|listen.group = nginx|' "$PHP_FPM_CONF"
-        sed -i 's|^;listen.mode = 0660|listen.mode = 0660|' "$PHP_FPM_CONF"
-        
-        mkdir -p /run/php
-        chown nginx:nginx /run/php
-    fi
-fi
-
-# ========== 配置 Nginx 虚拟主机 ==========
-echo -e "${GREEN}配置 Nginx...${NC}"
-
-if [ -d "/etc/nginx/http.d" ]; then
-    NGINX_CONF_FILE="/etc/nginx/http.d/speedtest.conf"
-elif [ -d "/etc/nginx/conf.d" ]; then
-    NGINX_CONF_FILE="/etc/nginx/conf.d/speedtest.conf"
-else
-    NGINX_CONF_FILE="/etc/nginx/sites-available/speedtest"
-    mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
-fi
-
-cat > "$NGINX_CONF_FILE" << EOF
-server {
-    listen $PORT;
-    server_name _;
-
-    root $PROJECT_DIR;
-    index index.html index.htm index.php;
-
-    access_log /var/log/nginx/speedtest_access.log;
-    error_log /var/log/nginx/speedtest_error.log;
-
-    client_max_body_size 20M;
-
-    location / {
-        try_files \$uri \$uri/ /index.php?\$args;
-    }
-
-    location ~ \.php\$ {
-        try_files \$uri =404;
-        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
-        fastcgi_pass $PHP_SOCKET;
-        fastcgi_index index.php;
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
-    location ~ /\.ht {
-        deny all;
-    }
-}
-EOF
-
-if [ "$NGINX_CONF_FILE" = "/etc/nginx/sites-available/speedtest" ]; then
-    ln -sf "$NGINX_CONF_FILE" /etc/nginx/sites-enabled/speedtest
-fi
-
-# 测试 Nginx 配置
-echo -e "${YELLOW}测试 Nginx 配置...${NC}"
-nginx -t 2>&1
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Nginx 配置测试失败${NC}"
-    echo -e "${YELLOW}尝试修复配置...${NC}"
-    
-    sed -i 's|fastcgi_pass unix:/run/php/php-fpm.sock;|fastcgi_pass 127.0.0.1:9000;|' "$NGINX_CONF_FILE"
-    nginx -t 2>&1
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}仍然失败，请检查 PHP-FPM 配置${NC}"
-        cat "$NGINX_CONF_FILE"
-        exit 1
-    fi
-    PHP_SOCKET="127.0.0.1:9000"
-    echo -e "${GREEN}已切换到 TCP 模式: $PHP_SOCKET${NC}"
-fi
-
-# ========== 启动服务 ==========
-echo -e "${GREEN}启动服务...${NC}"
-
-if command -v rc-service &>/dev/null; then
-    rc-service $PHP_FPM_SERVICE restart 2>/dev/null || {
-        rc-service php-fpm restart 2>/dev/null || rc-service php-fpm82 restart 2>/dev/null || rc-service php-fpm83 restart 2>/dev/null
-    }
-    rc-update add $PHP_FPM_SERVICE default 2>/dev/null || true
-    
-    rc-service nginx restart
-    rc-update add nginx default 2>/dev/null || true
-elif command -v systemctl &>/dev/null; then
-    systemctl restart $PHP_FPM_SERVICE 2>/dev/null || true
-    systemctl enable $PHP_FPM_SERVICE 2>/dev/null || true
-    systemctl restart nginx
-    systemctl enable nginx 2>/dev/null || true
-else
-    service $PHP_FPM_SERVICE restart 2>/dev/null || true
-    service nginx restart 2>/dev/null || true
-fi
-
-sleep 2
-
-# 检查服务状态
-echo -e "${GREEN}检查服务状态...${NC}"
-if pgrep -x "nginx" > /dev/null; then
-    echo -e "${GREEN}✓ Nginx 运行中${NC}"
-else
-    echo -e "${RED}✗ Nginx 未运行${NC}"
-    echo -e "${YELLOW}查看错误: tail -20 /var/log/nginx/error.log${NC}"
-fi
-
-if pgrep -f "php-fpm" > /dev/null; then
-    echo -e "${GREEN}✓ PHP-FPM 运行中${NC}"
-else
-    echo -e "${YELLOW}⚠ PHP-FPM 可能未运行${NC}"
-fi
-
-# ========== 安装 st 命令 ==========
-install_st_command
-
-# ========== 最终信息 ==========
-sleep 1
-
-IP=$(curl -s -m 5 4.ipw.cn 2>/dev/null || curl -s -m 5 ipinfo.io/ip 2>/dev/null || curl -s -m 5 ifconfig.me 2>/dev/null || echo "服务器IP")
-
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$PORT 2>/dev/null)
-if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "403" ] || [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
-    STATUS="可访问 (HTTP $HTTP_CODE)"
-elif [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then
-    STATUS="可访问 (HTTP $HTTP_CODE)"
-else
-    STATUS="请检查服务状态"
-fi
-
-echo -e "${GREEN}================================${NC}"
-echo -e "${GREEN}   Speedtest-X 部署成功！${NC}"
-echo -e "${GREEN}================================${NC}"
-echo -e "${YELLOW}访问地址:  http://${IP}:${PORT}${NC}"
-echo -e "${YELLOW}项目目录:  $PROJECT_DIR${NC}"
-echo -e "${YELLOW}Nginx 配置: $NGINX_CONF_FILE${NC}"
-echo -e "${YELLOW}PHP-FPM:    $PHP_SOCKET${NC}"
-echo -e "${YELLOW}本地状态:  $STATUS${NC}"
-echo ""
-echo -e "${BOLD}${GREEN}使用方法:${NC}"
-echo -e "  管理菜单: ${BOLD}st${NC}"
-echo -e "  卸载:     ${BOLD}$(basename "$0") uninstall${NC}"
-echo -e "${GREEN}================================${NC}"
-
-if [ "$STATUS" = "请检查服务状态" ]; then
-    echo -e "\n${YELLOW}调试信息:${NC}"
-    echo -e "  1. 检查 Nginx 错误日志: tail -20 /var/log/nginx/error.log"
-    echo -e "  2. 检查 PHP-FPM 状态: ps aux | grep php"
-    echo -e "  3. 手动测试: curl -v http://127.0.0.1:$PORT"
-    echo -e "  4. 使用管理菜单: st"
-fi
-
-echo -e "\n${GREEN}PHP 已加载扩展:${NC}"
-php -m | grep -E "ctype|mbstring|xml|curl|zip|gd|json|openssl" | sed 's/^/  - /'
-
-if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
-    echo -e "\n${YELLOW}⚠ 请执行: ufw allow $PORT${NC}"
-elif command -v firewall-cmd &>/dev/null && firewall-cmd --state 2>/dev/null | grep -q "running"; then
-    echo -e "\n${YELLOW}⚠ 请执行: firewall-cmd --add-port=${PORT}/tcp --permanent && firewall-cmd --reload${NC}"
-fi
