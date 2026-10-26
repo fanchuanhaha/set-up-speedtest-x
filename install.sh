@@ -3,7 +3,8 @@
 # ============================================
 # Speedtest-X 一键安装/卸载/管理脚本 (Nginx + PHP-FPM)
 # 用法: ./speedtest.sh                       # 安装（交互输入端口+文件夹）
-#       ./speedtest.sh install 33332 myspeed # 安装（指定端口和文件夹）
+#       ./speedtest.sh install 33332 abc     # 安装到 /www/wwwroot/speedtest/abc/
+#       ./speedtest.sh install 33332         # 安装到 /www/wwwroot/speedtest/（根）
 #       ./speedtest.sh uninstall             # 完全卸载
 #       ./speedtest.sh menu                  # 弹出管理菜单
 #       安装后可使用 st 命令管理
@@ -18,8 +19,9 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ---------- 配置 ----------
-PROJECT_NAME=""
-PROJECT_DIR="/www/wwwroot"
+BASE_DIR="/www/wwwroot/speedtest"     # 基础目录（Nginx root 永远指向这里）
+PROJECT_NAME=""                       # 用户输入的子文件夹（空=直接放在 BASE_DIR）
+PROJECT_DIR="$BASE_DIR"               # 实际项目目录
 LOG_FILE="/var/log/speedtest_access.log"
 ST_COMMAND_PATH="/usr/local/bin/st"
 
@@ -36,7 +38,7 @@ detect_os() {
     fi
 }
 
-# ========== 端口占用检测 ==========
+# ========== 端口检测 ==========
 check_port() {
     local port=$1
     if command -v ss &>/dev/null; then
@@ -51,19 +53,13 @@ check_port() {
     return 1
 }
 
-# ========== 端口验证 ==========
 validate_port() {
     local port=$1
     if ! [[ "$port" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}错误: 端口必须为数字${NC}"
-        return 1
+        echo -e "${RED}错误: 端口必须为数字${NC}"; return 1
     fi
     if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-        echo -e "${RED}错误: 端口范围必须在 1-65535 之间${NC}"
-        return 1
-    fi
-    if [ "$port" -lt 1024 ] && [ "$(id -u)" -ne 0 ]; then
-        echo -e "${YELLOW}警告: 端口 1-1023 为系统保留端口，需要 root 权限${NC}"
+        echo -e "${RED}错误: 端口范围必须在 1-65535 之间${NC}"; return 1
     fi
     return 0
 }
@@ -112,6 +108,7 @@ NC='\033[0m'
 STEOF
 
     cat >> "$ST_COMMAND_PATH" << EOF
+BASE_DIR="${BASE_DIR}"
 PROJECT_NAME="${PROJECT_NAME}"
 PROJECT_DIR="${PROJECT_DIR}"
 PORT="${ACTUAL_PORT:-unknown}"
@@ -120,7 +117,7 @@ EOF
 
     cat >> "$ST_COMMAND_PATH" << 'STEOF'
 
-# 计算访问路径
+# 访问路径
 if [ -z "$PROJECT_NAME" ]; then
     URL_PATH="/"
 else
@@ -345,10 +342,11 @@ show_config() {
     echo -e "  🏠 http://localhost:${PORT}${URL_PATH}"
     echo ""
     if [ -z "$PROJECT_NAME" ]; then
-        echo -e "${BOLD}部署方式:${NC} 根目录"
+        echo -e "${BOLD}部署方式:${NC} 根目录 (${BASE_DIR})"
     else
         echo -e "${BOLD}部署方式:${NC} 子目录 (${PROJECT_NAME})"
     fi
+    echo -e "${BOLD}基础目录:${NC} ${BASE_DIR}"
     echo -e "${BOLD}项目目录:${NC} ${PROJECT_DIR}"
     echo -e "${BOLD}监听端口:${NC} ${PORT}"
     echo ""
@@ -382,11 +380,7 @@ uninstall_speedtest() {
     echo -e "${RED}${BOLD}╚════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "${YELLOW}这将删除:${NC}"
-    if [ -z "$PROJECT_NAME" ]; then
-        echo -e "  - 根目录 ${PROJECT_DIR} 下的 Speedtest-X 文件"
-    else
-        echo -e "  - Speedtest-X 项目文件 (${PROJECT_DIR})"
-    fi
+    echo -e "  - 项目目录: ${PROJECT_DIR}"
     echo -e "  - Nginx 配置文件"
     echo -e "  - st 管理命令"
     echo ""
@@ -413,18 +407,7 @@ uninstall_speedtest() {
     rm -f /etc/nginx/sites-enabled/speedtest
     if command -v nginx &>/dev/null; then nginx -s reload 2>/dev/null || true; fi
 
-    if [ -z "$PROJECT_NAME" ]; then
-        # 根目录部署：只删项目文件，不删 /www/wwwroot
-        rm -f "$PROJECT_DIR/index.html"
-        rm -f "$PROJECT_DIR/index.php"
-        rm -f "$PROJECT_DIR/results.json"
-        rm -rf "$PROJECT_DIR/speedtest-x" 2>/dev/null
-        # 其余用户其他文件保留
-        echo -e "${YELLOW}注意: 根目录部署，仅删除项目核心文件，其他文件保留${NC}"
-    else
-        rm -rf "$PROJECT_DIR"
-    fi
-
+    rm -rf "$PROJECT_DIR"
     rm -f /var/log/nginx/speedtest_access.log
     rm -f /var/log/nginx/speedtest_error.log
     rm -f /usr/local/bin/st
@@ -464,6 +447,8 @@ STEOF
 # ========== 卸载函数（安装脚本内）==========
 uninstall() {
     if [ -f "$ST_COMMAND_PATH" ]; then
+        _BD=$(grep -oP '^BASE_DIR="\K[^"]+' "$ST_COMMAND_PATH" | head -1)
+        [ -n "$_BD" ] && BASE_DIR="$_BD"
         _PD=$(grep -oP '^PROJECT_DIR="\K[^"]+' "$ST_COMMAND_PATH" | head -1)
         [ -n "$_PD" ] && PROJECT_DIR="$_PD"
         _PN=$(grep -oP '^PROJECT_NAME="\K[^"]+' "$ST_COMMAND_PATH" | head -1)
@@ -509,14 +494,10 @@ uninstall() {
         fi
     fi
 
-    if [ -z "$PROJECT_NAME" ]; then
-        rm -f "$PROJECT_DIR/index.html"
-        rm -f "$PROJECT_DIR/index.php"
-        rm -f "$PROJECT_DIR/results.json"
-        rm -rf "$PROJECT_DIR/speedtest-x" 2>/dev/null
-        echo -e "${YELLOW}注意: 根目录部署，仅删除项目核心文件${NC}"
-    else
-        rm -rf "$PROJECT_DIR"
+    rm -rf "$PROJECT_DIR"
+    # 若子目录部署后 base 变空，也一并清理
+    if [ -n "$PROJECT_NAME" ] && [ -d "$BASE_DIR" ] && [ -z "$(ls -A "$BASE_DIR" 2>/dev/null)" ]; then
+        rmdir "$BASE_DIR" 2>/dev/null || true
     fi
 
     rm -f "$ST_COMMAND_PATH"
@@ -685,27 +666,31 @@ fi
 # ========== 部署文件夹输入 ==========
 if [ -n "$3" ]; then
     PROJECT_NAME=$3
-    PROJECT_DIR="/www/wwwroot/$PROJECT_NAME"
+    if [[ ! "$PROJECT_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo -e "${RED}错误: 文件夹名只能包含字母、数字、下划线和连字符${NC}"
+        exit 1
+    fi
+    PROJECT_DIR="$BASE_DIR/$PROJECT_NAME"
 else
     read -p "请输入部署文件夹(直接回车即可): " INPUT_NAME
     if [ -z "$INPUT_NAME" ]; then
         PROJECT_NAME=""
-        PROJECT_DIR="/www/wwwroot"
+        PROJECT_DIR="$BASE_DIR"
     else
         if [[ ! "$INPUT_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
             echo -e "${RED}错误: 文件夹名只能包含字母、数字、下划线和连字符${NC}"
             exit 1
         fi
         PROJECT_NAME="$INPUT_NAME"
-        PROJECT_DIR="/www/wwwroot/$PROJECT_NAME"
+        PROJECT_DIR="$BASE_DIR/$PROJECT_NAME"
     fi
 fi
 
 if [ -z "$PROJECT_NAME" ]; then
-    echo -e "${GREEN}部署方式: 根目录 (http://IP:$PORT/)${NC}"
+    echo -e "${GREEN}部署方式: 根目录 -> http://IP:$PORT/${NC}"
     echo -e "${GREEN}项目目录: $PROJECT_DIR${NC}"
 else
-    echo -e "${GREEN}部署方式: 子目录 (http://IP:$PORT/$PROJECT_NAME/)${NC}"
+    echo -e "${GREEN}部署方式: 子目录 -> http://IP:$PORT/$PROJECT_NAME/${NC}"
     echo -e "${GREEN}项目目录: $PROJECT_DIR${NC}"
 fi
 
@@ -823,13 +808,13 @@ else
 fi
 
 if [ -z "$PROJECT_NAME" ]; then
-    # 根目录部署
+    # 根目录部署（项目直接在 BASE_DIR 下）
     cat > "$NGINX_CONF_FILE" << EOF
 server {
     listen $PORT;
     server_name _;
 
-    root /www/wwwroot;
+    root $BASE_DIR;
     index index.html index.htm index.php;
 
     access_log /var/log/nginx/speedtest_access.log;
@@ -862,7 +847,7 @@ server {
     listen $PORT;
     server_name _;
 
-    root /www/wwwroot;
+    root $BASE_DIR;
     index index.html index.htm index.php;
 
     access_log /var/log/nginx/speedtest_access.log;
@@ -971,6 +956,7 @@ if [ -z "$PROJECT_NAME" ]; then
 else
     echo -e "${YELLOW}部署方式:  子目录 (${PROJECT_NAME})${NC}"
 fi
+echo -e "${YELLOW}基础目录:  $BASE_DIR${NC}"
 echo -e "${YELLOW}项目目录:  $PROJECT_DIR${NC}"
 echo -e "${YELLOW}Nginx 配置: $NGINX_CONF_FILE${NC}"
 echo -e "${YELLOW}PHP-FPM:    $PHP_SOCKET${NC}"
