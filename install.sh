@@ -19,9 +19,9 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ---------- 配置 ----------
-BASE_DIR="/www/wwwroot/speedtest"     # 基础目录（Nginx root 永远指向这里）
-PROJECT_NAME=""                       # 用户输入的子文件夹（空=直接放在 BASE_DIR）
-PROJECT_DIR="$BASE_DIR"               # 实际项目目录
+BASE_DIR="/www/wwwroot/speedtest"
+PROJECT_NAME=""
+PROJECT_DIR="$BASE_DIR"
 LOG_FILE="/var/log/speedtest_access.log"
 ST_COMMAND_PATH="/usr/local/bin/st"
 
@@ -105,6 +105,8 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+ST_COMMAND_PATH="/usr/local/bin/st"
+
 STEOF
 
     cat >> "$ST_COMMAND_PATH" << EOF
@@ -117,42 +119,27 @@ EOF
 
     cat >> "$ST_COMMAND_PATH" << 'STEOF'
 
-# 访问路径
-if [ -z "$PROJECT_NAME" ]; then
-    URL_PATH="/"
-else
-    URL_PATH="/$PROJECT_NAME/"
-fi
+if [ -z "$PROJECT_NAME" ]; then URL_PATH="/"; else URL_PATH="/$PROJECT_NAME/"; fi
 
-show_menu() {
-    clear
-    echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║        Speedtest-X 管理菜单           ║${NC}"
-    echo -e "${CYAN}${BOLD}╚════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${GREEN}  1)${NC} ${BOLD}启动服务${NC}"
-    echo -e "${YELLOW}  2)${NC} ${BOLD}重启服务${NC}"
-    echo -e "${BLUE}  3)${NC} ${BOLD}查看状态${NC}"
-    echo -e "${RED}  4)${NC} ${BOLD}停止服务${NC}"
-    echo -e "${CYAN}  5)${NC} ${BOLD}查看日志${NC}"
-    echo -e "${CYAN}  6)${NC} ${BOLD}配置信息${NC}"
-    echo -e "${RED}  7)${NC} ${BOLD}卸载程序${NC}"
-    echo ""
-    echo -e "${BOLD}  0)${NC} ${BOLD}退出${NC}"
-    echo ""
-    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    read -p "$(echo -e ${BOLD}"请选择操作 [0-7]: "${NC})" choice
-    case $choice in
-        1) start_services ;;
-        2) restart_services ;;
-        3) show_status ;;
-        4) stop_services ;;
-        5) show_logs ;;
-        6) show_config ;;
-        7) uninstall_speedtest ;;
-        0) echo -e "${GREEN}再见！${NC}"; exit 0 ;;
-        *) echo -e "${RED}无效选择！${NC}"; sleep 1; show_menu ;;
-    esac
+# ========== 辅助 ==========
+find_nginx_conf() {
+    if [ -f "/etc/nginx/http.d/speedtest.conf" ]; then
+        echo "/etc/nginx/http.d/speedtest.conf"
+    elif [ -f "/etc/nginx/conf.d/speedtest.conf" ]; then
+        echo "/etc/nginx/conf.d/speedtest.conf"
+    elif [ -f "/etc/nginx/sites-enabled/speedtest" ]; then
+        echo "/etc/nginx/sites-enabled/speedtest"
+    fi
+}
+
+reload_nginx() {
+    if command -v rc-service &>/dev/null; then
+        rc-service nginx reload 2>/dev/null || rc-service nginx restart 2>/dev/null
+    elif command -v systemctl &>/dev/null; then
+        systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null
+    else
+        service nginx reload 2>/dev/null || service nginx restart 2>/dev/null
+    fi
 }
 
 check_port() {
@@ -167,11 +154,264 @@ check_port() {
     return 1
 }
 
+# ========== 菜单 ==========
+show_menu() {
+    clear
+    echo -e "${CYAN}${BOLD}╔════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}${BOLD}║        Speedtest-X 管理菜单           ║${NC}"
+    echo -e "${CYAN}${BOLD}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${GREEN}  1)${NC} ${BOLD}启动服务${NC}"
+    echo -e "${YELLOW}  2)${NC} ${BOLD}重启服务${NC}"
+    echo -e "${BLUE}  3)${NC} ${BOLD}查看状态${NC}"
+    echo -e "${RED}  4)${NC} ${BOLD}停止服务${NC}"
+    echo -e "${CYAN}  5)${NC} ${BOLD}查看日志${NC}"
+    echo -e "${CYAN}  6)${NC} ${BOLD}配置信息${NC}"
+    echo -e "${BOLD}  7)${NC} ${BOLD}修改端口${NC}"
+    echo -e "${BOLD}  8)${NC} ${BOLD}修改目录${NC}"
+    echo -e "${RED}  9)${NC} ${BOLD}卸载程序${NC}"
+    echo ""
+    echo -e "${BOLD}  0)${NC} ${BOLD}退出${NC}"
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -p "$(echo -e ${BOLD}"请选择操作 [0-9]: "${NC})" choice
+    case $choice in
+        1) start_services ;;
+        2) restart_services ;;
+        3) show_status ;;
+        4) stop_services ;;
+        5) show_logs ;;
+        6) show_config ;;
+        7) change_port ;;
+        8) change_dir ;;
+        9) uninstall_speedtest ;;
+        0) echo -e "${GREEN}再见！${NC}"; exit 0 ;;
+        *) echo -e "${RED}无效选择！${NC}"; sleep 1; show_menu ;;
+    esac
+}
+
+# ========== 修改端口 ==========
+change_port() {
+    clear
+    echo -e "${CYAN}${BOLD}─── 修改端口 ───${NC}"
+    echo -e "当前端口: ${GREEN}$PORT${NC}"
+    echo ""
+    read -p "请输入新端口号 (1-65535): " NEW_PORT
+    if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
+        echo -e "${RED}端口无效${NC}"; sleep 2; return
+    fi
+    if [ "$NEW_PORT" = "$PORT" ]; then
+        echo -e "${YELLOW}端口未变${NC}"; sleep 1; return
+    fi
+    if check_port $NEW_PORT; then
+        echo -e "${RED}端口 $NEW_PORT 已被占用${NC}"; sleep 2; return
+    fi
+    
+    CONF_FILE=$(find_nginx_conf)
+    if [ -z "$CONF_FILE" ]; then
+        echo -e "${RED}找不到 Nginx 配置文件${NC}"; sleep 2; return
+    fi
+    
+    cp "$CONF_FILE" "${CONF_FILE}.bak"
+    sed -i "s/^\(\s*\)listen\s\+[0-9]\+;/\1listen $NEW_PORT;/" "$CONF_FILE"
+    
+    if ! nginx -t 2>/dev/null; then
+        echo -e "${RED}Nginx 配置测试失败，回滚${NC}"
+        mv "${CONF_FILE}.bak" "$CONF_FILE"
+        sleep 2; return
+    fi
+    rm -f "${CONF_FILE}.bak"
+    
+    reload_nginx
+    sleep 1
+    
+    sed -i "s/^PORT=.*/PORT=\"$NEW_PORT\"/" "$ST_COMMAND_PATH"
+    OLD_PORT=$PORT
+    PORT=$NEW_PORT
+    
+    echo -e "${GREEN}✓ 端口已从 $OLD_PORT 修改为 $PORT${NC}"
+    echo -e "${CYAN}新访问地址: http://IP:$PORT$URL_PATH${NC}"
+    if check_port $PORT; then
+        echo -e "${GREEN}✓ 新端口监听正常${NC}"
+    else
+        echo -e "${YELLOW}⚠ 新端口未监听，请检查: $CONF_FILE${NC}"
+    fi
+    echo ""
+    read -p "按回车键返回菜单..."
+    show_menu
+}
+
+# ========== 修改目录 ==========
+change_dir() {
+    clear
+    echo -e "${CYAN}${BOLD}─── 修改目录 ───${NC}"
+    if [ -z "$PROJECT_NAME" ]; then
+        echo -e "当前部署: ${GREEN}根目录${NC} ($BASE_DIR)"
+        echo -e "访问地址: http://IP:$PORT/"
+    else
+        echo -e "当前部署: ${GREEN}子目录${NC} ($BASE_DIR/$PROJECT_NAME)"
+        echo -e "访问地址: http://IP:$PORT/$PROJECT_NAME/"
+    fi
+    echo ""
+    read -p "请输入新目录名（直接回车=根目录）: " NEW_NAME
+    
+    if [ -n "$NEW_NAME" ] && [[ ! "$NEW_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo -e "${RED}目录名只能包含字母、数字、下划线、连字符${NC}"; sleep 2; return
+    fi
+    if [ "$NEW_NAME" = "$PROJECT_NAME" ]; then
+        echo -e "${YELLOW}目录未变${NC}"; sleep 1; return
+    fi
+    if [ -n "$NEW_NAME" ] && [ -d "${BASE_DIR}/${NEW_NAME}" ]; then
+        echo -e "${RED}目标目录 ${BASE_DIR}/${NEW_NAME} 已存在${NC}"; sleep 2; return
+    fi
+    
+    CONF_FILE=$(find_nginx_conf)
+    if [ -z "$CONF_FILE" ]; then
+        echo -e "${RED}找不到 Nginx 配置文件${NC}"; sleep 2; return
+    fi
+    
+    PHP_SOCKET=$(grep -oP 'fastcgi_pass \K[^;]+' "$CONF_FILE" | head -1 | sed 's/;//')
+    [ -z "$PHP_SOCKET" ] && PHP_SOCKET="unix:/run/php/php-fpm.sock"
+    
+    cp "$CONF_FILE" "${CONF_FILE}.bak"
+    OLD_PROJECT_NAME="$PROJECT_NAME"
+    OLD_PROJECT_DIR="$PROJECT_DIR"
+    
+    echo -e "${YELLOW}移动文件...${NC}"
+    mkdir -p "$BASE_DIR"
+    if [ -z "$OLD_PROJECT_NAME" ] && [ -n "$NEW_NAME" ]; then
+        mkdir -p "${BASE_DIR}/${NEW_NAME}"
+        find "$BASE_DIR" -mindepth 1 -maxdepth 1 ! -name "$NEW_NAME" -exec mv {} "${BASE_DIR}/${NEW_NAME}/" \; 2>/dev/null
+    elif [ -n "$OLD_PROJECT_NAME" ] && [ -z "$NEW_NAME" ]; then
+        find "${BASE_DIR}/${OLD_PROJECT_NAME}" -mindepth 1 -maxdepth 1 -exec mv {} "$BASE_DIR/" \; 2>/dev/null
+        rmdir "${BASE_DIR}/${OLD_PROJECT_NAME}" 2>/dev/null || true
+    else
+        mv "${BASE_DIR}/${OLD_PROJECT_NAME}" "${BASE_DIR}/${NEW_NAME}"
+    fi
+    
+    PROJECT_NAME="$NEW_NAME"
+    if [ -z "$PROJECT_NAME" ]; then
+        PROJECT_DIR="$BASE_DIR"; URL_PATH="/"
+    else
+        PROJECT_DIR="${BASE_DIR}/${PROJECT_NAME}"; URL_PATH="/$PROJECT_NAME/"
+    fi
+    
+    echo -e "${YELLOW}更新 Nginx 配置...${NC}"
+    if [ -z "$PROJECT_NAME" ]; then
+        cat > "$CONF_FILE" << NGINXEOF
+server {
+    listen ${PORT};
+    server_name _;
+
+    root ${BASE_DIR};
+    index index.html index.htm index.php;
+
+    access_log /var/log/nginx/speedtest_access.log;
+    error_log /var/log/nginx/speedtest_error.log;
+
+    client_max_body_size 20M;
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$args;
+    }
+
+    location ~ \.php\$ {
+        try_files \$uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+        fastcgi_pass ${PHP_SOCKET};
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+NGINXEOF
+    else
+        cat > "$CONF_FILE" << NGINXEOF
+server {
+    listen ${PORT};
+    server_name _;
+
+    root ${BASE_DIR};
+    index index.html index.htm index.php;
+
+    access_log /var/log/nginx/speedtest_access.log;
+    error_log /var/log/nginx/speedtest_error.log;
+
+    client_max_body_size 20M;
+
+    location = / {
+        return 301 /${PROJECT_NAME}/;
+    }
+
+    location = /${PROJECT_NAME} {
+        return 301 /${PROJECT_NAME}/;
+    }
+
+    location /${PROJECT_NAME}/ {
+        try_files \$uri \$uri/ /${PROJECT_NAME}/index.php?\$args;
+    }
+
+    location ~ ^/${PROJECT_NAME}/.+\.php\$ {
+        try_files \$uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.+)\$;
+        fastcgi_pass ${PHP_SOCKET};
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+NGINXEOF
+    fi
+    
+    if ! nginx -t 2>/dev/null; then
+        echo -e "${RED}Nginx 配置测试失败，回滚${NC}"
+        mv "${CONF_FILE}.bak" "$CONF_FILE"
+        echo -e "${YELLOW}回滚文件...${NC}"
+        if [ -z "$OLD_PROJECT_NAME" ] && [ -n "$NEW_NAME" ]; then
+            find "${BASE_DIR}/${NEW_NAME}" -mindepth 1 -maxdepth 1 -exec mv {} "$BASE_DIR/" \; 2>/dev/null
+            rmdir "${BASE_DIR}/${NEW_NAME}" 2>/dev/null || true
+        elif [ -n "$OLD_PROJECT_NAME" ] && [ -z "$NEW_NAME" ]; then
+            mkdir -p "${BASE_DIR}/${OLD_PROJECT_NAME}"
+            find "$BASE_DIR" -mindepth 1 -maxdepth 1 ! -name "$OLD_PROJECT_NAME" -exec mv {} "${BASE_DIR}/${OLD_PROJECT_NAME}/" \; 2>/dev/null
+        else
+            mv "${BASE_DIR}/${NEW_NAME}" "${BASE_DIR}/${OLD_PROJECT_NAME}"
+        fi
+        PROJECT_NAME="$OLD_PROJECT_NAME"
+        PROJECT_DIR="$OLD_PROJECT_DIR"
+        if [ -z "$PROJECT_NAME" ]; then URL_PATH="/"; else URL_PATH="/$PROJECT_NAME/"; fi
+        sleep 3; return
+    fi
+    rm -f "${CONF_FILE}.bak"
+    
+    reload_nginx
+    sleep 1
+    
+    sed -i "s|^PROJECT_NAME=.*|PROJECT_NAME=\"$PROJECT_NAME\"|" "$ST_COMMAND_PATH"
+    sed -i "s|^PROJECT_DIR=.*|PROJECT_DIR=\"$PROJECT_DIR\"|" "$ST_COMMAND_PATH"
+    
+    echo -e "${GREEN}✓ 目录已修改${NC}"
+    echo -e "${CYAN}项目目录: $PROJECT_DIR${NC}"
+    echo -e "${CYAN}访问地址: http://IP:$PORT$URL_PATH${NC}"
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 3 "http://127.0.0.1:$PORT$URL_PATH" 2>/dev/null)
+    echo -e "${CYAN}访问测试: HTTP $HTTP_CODE${NC}"
+    echo ""
+    read -p "按回车键返回菜单..."
+    show_menu
+}
+
+# ========== 服务控制 ==========
 start_services() {
     echo -e "${GREEN}正在启动服务...${NC}"
     if [ ! -f "$PROJECT_DIR/index.html" ] && [ ! -f "$PROJECT_DIR/index.php" ]; then
-        echo -e "${RED}错误: Speedtest-X 未安装！${NC}"
-        sleep 2; show_menu; return
+        echo -e "${RED}错误: Speedtest-X 未安装！${NC}"; sleep 2; show_menu; return
     fi
     if command -v rc-service &>/dev/null; then
         rc-service $PHP_FPM_SERVICE start 2>/dev/null || {
@@ -220,8 +460,7 @@ stop_services() {
 restart_services() {
     echo -e "${YELLOW}正在重启服务...${NC}"
     if [ ! -f "$PROJECT_DIR/index.html" ] && [ ! -f "$PROJECT_DIR/index.php" ]; then
-        echo -e "${RED}错误: Speedtest-X 未安装！${NC}"
-        sleep 2; show_menu; return
+        echo -e "${RED}错误: Speedtest-X 未安装！${NC}"; sleep 2; show_menu; return
     fi
     if command -v rc-service &>/dev/null; then
         rc-service $PHP_FPM_SERVICE restart 2>/dev/null || {
@@ -350,14 +589,7 @@ show_config() {
     echo -e "${BOLD}项目目录:${NC} ${PROJECT_DIR}"
     echo -e "${BOLD}监听端口:${NC} ${PORT}"
     echo ""
-    CONF_FILE=""
-    if [ -f "/etc/nginx/http.d/speedtest.conf" ]; then
-        CONF_FILE="/etc/nginx/http.d/speedtest.conf"
-    elif [ -f "/etc/nginx/conf.d/speedtest.conf" ]; then
-        CONF_FILE="/etc/nginx/conf.d/speedtest.conf"
-    elif [ -f "/etc/nginx/sites-enabled/speedtest" ]; then
-        CONF_FILE="/etc/nginx/sites-enabled/speedtest"
-    fi
+    CONF_FILE=$(find_nginx_conf)
     if [ -n "$CONF_FILE" ]; then
         echo -e "${BOLD}配置文件:${NC} ${CONF_FILE}"
         echo -e "${BOLD}PHP Socket:${NC} $(grep fastcgi_pass $CONF_FILE | awk '{print $2}' | tr -d ';')"
@@ -408,6 +640,9 @@ uninstall_speedtest() {
     if command -v nginx &>/dev/null; then nginx -s reload 2>/dev/null || true; fi
 
     rm -rf "$PROJECT_DIR"
+    if [ -n "$PROJECT_NAME" ] && [ -d "$BASE_DIR" ] && [ -z "$(ls -A "$BASE_DIR" 2>/dev/null)" ]; then
+        rmdir "$BASE_DIR" 2>/dev/null || true
+    fi
     rm -f /var/log/nginx/speedtest_access.log
     rm -f /var/log/nginx/speedtest_error.log
     rm -f /usr/local/bin/st
@@ -495,7 +730,6 @@ uninstall() {
     fi
 
     rm -rf "$PROJECT_DIR"
-    # 若子目录部署后 base 变空，也一并清理
     if [ -n "$PROJECT_NAME" ] && [ -d "$BASE_DIR" ] && [ -z "$(ls -A "$BASE_DIR" 2>/dev/null)" ]; then
         rmdir "$BASE_DIR" 2>/dev/null || true
     fi
@@ -808,7 +1042,6 @@ else
 fi
 
 if [ -z "$PROJECT_NAME" ]; then
-    # 根目录部署（项目直接在 BASE_DIR 下）
     cat > "$NGINX_CONF_FILE" << EOF
 server {
     listen $PORT;
@@ -841,7 +1074,6 @@ server {
 }
 EOF
 else
-    # 子目录部署
     cat > "$NGINX_CONF_FILE" << EOF
 server {
     listen $PORT;
